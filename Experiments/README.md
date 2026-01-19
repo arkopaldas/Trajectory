@@ -1,6 +1,6 @@
 # Introduction
 
-This folder contains the following experiments. The details have been listed under in the description.
+This folder contains the following experiments. The details have been listed under in the description below.
 
 ### Unicycle Model Trajectory Finding Experiment
 
