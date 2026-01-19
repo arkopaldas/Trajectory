@@ -1,8 +1,8 @@
 # Introduction
 
-This folder contains -
+This folder contains the following experiments. The details have been listed under in the description.
 
-## Unicycle Model Trajectory Finding Experiment
+### Unicycle Model Trajectory Finding Experiment
 
 Trajectory finding using unicycle model. There is a heading orientation with a common velocity for both the axes.
 
@@ -18,7 +18,7 @@ Trajectory finding using unicycle model. There is a heading orientation with a c
 *   Only a single obstacle is placed otherwise no solutions were acheived.
 *   Total time taken to solve is 13.5 seconds.
 
-## Unicycle Model Trajectory Finding with Fixed Initial Condition Experiment
+### Unicycle Model Trajectory Finding with Fixed Initial Condition Experiment
 
 Trajectory finding using unicycle model. There is a heading orientation with a common velocity for both the axes.
 
