@@ -1,5 +1,4 @@
 # Introduction
-
 This folder contains the following data generators. The details have been listed in the description below.
 
 ### Simplified Linear Model Data Generator
