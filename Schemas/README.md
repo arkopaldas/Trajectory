@@ -1,5 +1,4 @@
 # Introduction
-
 This folder contains the following database schemas as csv files. The details have been listed in the description below.
 
 ### Simplified Linear Model Dataset Schema
