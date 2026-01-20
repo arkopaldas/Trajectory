@@ -14,5 +14,7 @@ This portion of the repository is responsible for training AI models on the gene
 Run the following command to install the dependencies for the neural network training models -
 
 `!pip uninstall -y torch torchvision torchaudio`
+
 `!pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2`
+
 `!pip install pandas numpy scikit-learn tqdm`
