@@ -1,9 +1,7 @@
 # Introduction
-
 This folder contains the following experiments. The details have been listed in the description below.
 
 ### Unicycle Model Trajectory Finding Experiment
-
 Trajectory finding using unicycle model. There is a heading orientation with a common velocity for both the axes.
 
 *   Solver used z3.
@@ -19,7 +17,6 @@ Trajectory finding using unicycle model. There is a heading orientation with a c
 *   Total time taken to solve is 13.5 seconds.
 
 ### Unicycle Model Trajectory Finding with Fixed Initial Condition Experiment
-
 Trajectory finding using unicycle model. There is a heading orientation with a common velocity for both the axes.
 
 *   Solver used PuLP.
