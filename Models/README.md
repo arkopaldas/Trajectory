@@ -1,9 +1,7 @@
 # Introduction
-
 This folder contains the following kinetic models. The details have been listed in the description below.
 
 ### Simplified Linear Model Trajectory Finding
-
 Trajectory finding using simplified linear model. The velocities along each axes are independent.
 
 *   Solver used z3.
@@ -16,7 +14,6 @@ Trajectory finding using simplified linear model. The velocities along each axes
 *   Total time taken to solve is 4.1 seconds.
 
 ### Unicycle Model Trajectory Finding
-
 Trajectory finding using unicycle model. There is a heading orientation with a common velocity for both the axes.
 
 *   Solver used PuLP.
