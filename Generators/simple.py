@@ -194,5 +194,6 @@ if __name__ == "__main__":
         for key, val in result.items():
             df.loc[i, key] = val
 
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     df.to_csv(OUTPUT_FILE, index=False)
     print(f"\nAll results are saved to '{OUTPUT_FILE}'")
