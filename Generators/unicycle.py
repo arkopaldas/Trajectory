@@ -46,9 +46,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_FILE  = os.path.join(BASE_DIR, "..", "Datasets", "Schemas", "Unicycle Model Dataset Schema.csv")
 OUTPUT_FILE = os.path.join(BASE_DIR, "..", "Datasets", "Results", "Unicycle Model Result.csv")
 
-input_file = r"C:\Users\ARKOPAL\Desktop\Temp\Dissertation\Notebook\Datasets\Schemas\Unicycle Model Dataset Schema.csv"
-output_file = r"C:\Users\ARKOPAL\Desktop\Temp\Dissertation\Notebook\Datasets\Results\Unicycle Model Result.csv"
-
 def parser(s):
     if pd.isna(s):
         return None
@@ -233,7 +230,7 @@ def unicycle_solver(time_bound, dt, vmin, vmax, wmin, wmax, thmin, thmax, dth, m
     }
 
 if __name__ == "__main__":
-    df = pd.read_csv(input_file)
+    df = pd.read_csv(INPUT_FILE)
     result_cols = ['STATUS', 'SOLVER', 'TOTAL STEPS', 'LENGTH', 'BUILD TIME (ms)', 'SOLVE TIME (ms)', 'TOTAL TIME (ms)', 'DATA POINTS']
     for col in result_cols:
         if col not in df.columns:
@@ -252,5 +249,6 @@ if __name__ == "__main__":
         for key, val in result.items():
             df.loc[i, key] = val
 
-    df.to_csv(output_file, index=False)
-    print(f"\nAll results are saved to '{output_file}'")
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    df.to_csv(OUTPUT_FILE, index=False)
+    print(f"\nAll results are saved to '{OUTPUT_FILE}'")
