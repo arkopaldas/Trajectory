@@ -9,40 +9,46 @@ A research notebook for trajectory planning using formal methods (SMT/MILP) and 
 ```
 Trajectory/
 ├── Controllers/
-│   ├── milp_unicycle.py          # MILP controller for the unicycle model
-│   └── smt_simple.py             # SMT (Z3) controller for the simple model
-│
-├── Experiments/
-│   ├── milp_simple.py            # MILP planner for the simple model (with circle/polygon obstacles)
-│   ├── milp_fixed_unicycle.py    # MILP unicycle planner with randomised start points
-│   └── smt_unicycle.py           # SMT (Z3) planner for the unicycle model
-│
-├── Generators/
-│   ├── simple.py                 # Batch dataset generator for the simple model (Z3 + multiprocessing)
-│   └── unicycle.py               # Batch dataset generator for the unicycle model (MILP + multiprocessing)
+│   ├── milp_unicycle.py                        # MILP controller for the unicycle model
+│   └── smt_simple.py                           # SMT (Z3) controller for the simple model
 │
 ├── Datasets/
-│   ├── Schemas/
-│   │   ├── Simple Model Dataset Schema.csv
-│   │   └── Unicycle Model Dataset Schema.csv
-│   └── Results/
-│       ├── Simple Model Result.csv
-│       └── Unicycle Model Result.csv
+│   ├── Results/
+|   |   └── N Trajectories                      # N is the number of trajectory samples
+│   |       ├── Simple Model Result.csv
+│   |       └── Unicycle Model Result.csv
+│   └── Schemas/
+│       ├── Simple Model Dataset Schema.csv
+│       └── Unicycle Model Dataset Schema.csv
+│
+├── Experiments/
+│   ├── milp_fixed_unicycle.py                  # MILP unicycle planner with randomised start points
+│   ├── milp_simple.py                          # MILP planner for the simple model (with circle/polygon obstacles)
+│   └── smt_unicycle.py                         # SMT (Z3) planner for the unicycle model
+│
+├── Generators/
+│   ├── simple.py                               # Batch dataset generator for the simple model (Z3 + multiprocessing)
+│   └── unicycle.py                             # Batch dataset generator for the unicycle model (MILP + multiprocessing)
 │
 └── Neural Networks/
-    ├── train_simple.py           # Training script for the simple model network
-    ├── train_unicycle.py         # Training script for the unicycle model network
-    ├── predict_simple.py         # Inference + trajectory visualisation (simple)
-    ├── predict_unicycle.py       # Inference + trajectory visualisation (unicycle)
-    ├── Networks/                 # Saved model weights (.pth files, git-ignored)
+    ├── train_simple.py                         # Training script for the simple model network
+    ├── train_unicycle.py                       # Training script for the unicycle model network
+    ├── train_all.py                            # Training script for the all model network
+    ├── predict_simple.py                       # Inference + trajectory visualisation (simple)
+    ├── predict_unicycle.py                     # Inference + trajectory visualisation (unicycle)
+    ├── Networks/                               # Saved model weights (.pth files, git-ignored)
+    |   └── N Trained                           # N is the number of trajectories used
+    |       ├── Simple.pth
+    |       └── Unicycle.pth
     └── Models/
-        ├── config.py             # Shared hyperparameters and path configuration
-        ├── utils.py              # Dataset class, training loop, evaluation, plotting
+        ├── config.py                           # Shared hyperparameters and path configuration
+        ├── utils.py                            # Dataset class, training loop, evaluation, plotting
+        ├── __init__.py
         ├── Simple/
-        │   ├── model.py          # SimpleTrajectoryNet architecture + dataset builder
+        │   ├── model.py                        # SimpleNet architecture + dataset builder
         │   └── __init__.py
         └── Unicycle/
-            ├── model.py          # UnicycleNet architecture + dataset builder
+            ├── model.py                        # UnicycleNet architecture + dataset builder
             └── __init__.py
 ```
 
@@ -109,7 +115,7 @@ python Controllers/smt_simple.py
 python Generators/simple.py
 python Generators/unicycle.py
 ```
-Results are written to `Datasets/Results/`. The number of instances is controlled by `max_instances` at the top of each generator file.
+Results are written to `Datasets/Results/* Trajectories`. The number of instances is controlled by `max_instances` at the top of each generator file.
 
 ### 3. Train a neural network
 Run from inside the `Neural Networks/` directory so that the relative `Models.*` imports resolve correctly:
@@ -119,6 +125,15 @@ python train_simple.py
 python train_unicycle.py
 ```
 Trained weights are saved to `Neural Networks/Networks/`.
+
+#### Training Configuration
+| Dataset | Batch   | Epochs | Notes             | Time Taken |
+| ------- | ------- | ------ | ----------------- | ---------- |
+| 10      | 4–8     | 1000   | High Overfit Risk | 3–4 mins   |
+| 100     | 16–32   | 500    | Overfit Risk      |            |
+| 1000    | 32–64   | 250    | Stable            |            |
+| 10000   | 64–128  | 100    | Efficient         | 8–15 mins  |
+| 100000  | 128–256 | 50     | Fast              |            |
 
 ### 4. Run inference
 ```bash
@@ -167,3 +182,16 @@ Same as above, plus:
 - Trained model weights (`Networks/*.pth`) are not tracked by git. Re-generate them by running the training scripts.
 - All scripts use `if __name__ == "__main__":` guards, making them safe to import and safe for multiprocessing on Windows.
 - File paths in `Generators/` and `Neural Networks/Models/config.py` are constructed with `os.path` for cross-platform compatibility.
+
+>`4 days 1 hour 14 minutes 2 seconds to create unicycle dataset 1L trajectories`
+
+>`6 hours 22 minutes 13 seconds to create simple dataset 1L trajectories`
+
+#### Loss Encountered
+| Dataset | Batch   | Epochs | Error Simple            | Error Unicycle                      |
+| ------- | ------- | ------ | ----------------------- | ----------------------------------- |
+| 10      | 4–8     | 1000   | RMSE=3.66,X=2.61,Y=2.56 | RMSE=3.66,X=2.61,Y=2.56,Theta=50.53 |
+| 100     | 16–32   | 500    | RMSE=3.66,X=2.61,Y=2.56 | RMSE=3.66,X=2.61,Y=2.56,Theta=50.53 |
+| 1000    | 32–64   | 250    | RMSE=3.66,X=2.61,Y=2.56 | RMSE=3.66,X=2.61,Y=2.56,Theta=50.53 |
+| 10000   | 64–128  | 100    | RMSE=3.66,X=2.61,Y=2.56 | RMSE=3.66,X=2.61,Y=2.56,Theta=50.53 |
+| 100000  | 128–256 | 50     | RMSE=3.66,X=2.61,Y=2.56 | RMSE=3.66,X=2.61,Y=2.56,Theta=50.53 |
