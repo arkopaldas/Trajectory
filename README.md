@@ -158,7 +158,7 @@ A random trajectory is sampled from the result CSV and the model's predicted tra
 
 `Verifier/` checks whether a trained network produces SAFE trajectories from the start region. `verify_simple.py` and `verify_unicycle.py` share the engine in `utils.py`; every switch and tolerance is in `Verifier/config.py`.
 
-```bash
+<!--```bash
 cd Verifier
 pip install maraboupy onnx          # maraboupy is only needed for the formal stage
 python verify_simple.py                                # all "<N> Trained" folders under ../Networks + summary table
@@ -167,7 +167,7 @@ python verify_simple.py --samples 5000 --formal-steps 2 --timeout 60
 python verify_simple.py --no-formal                    # simulation stage only
 python verify_simple.py --marabou-only [--replay]      # no simulation: full-horizon Marabou only
 python selftest.py                                     # checks the Marabou encoding without Marabou
-```
+```-->
 
 **Classification.** A trajectory is UNSAFE if it enters an obstacle, leaves the workspace, never reaches the goal (`GOAL_MODE`: `any` step or `final` step) or exceeds the control limits. Entering the margin is allowed unless `CHECK_MARGIN = True`. Each check can be switched off in `config.py`.
 
