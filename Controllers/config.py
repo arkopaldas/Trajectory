@@ -1,0 +1,30 @@
+import math
+
+OPTIMIZE = True
+MARGIN = 2.5
+TIME_BOUND = 60.0
+DEG2RAD = math.pi / 180.0
+
+START_REGION = (0, 0, 10, 10)
+GOAL_REGION = (90, 90, 100, 100)
+OBSTACLES = [
+    (20.0, 20.0, 30.0, 30.0),
+    (40.0, 20.0, 50.0, 30.0),
+    (20.0, 40.0, 30.0, 50.0),
+    (20.0, 70.0, 30.0, 80.0),
+    (40.0, 60.0, 50.0, 70.0),
+    (50.0, 40.0, 60.0, 50.0),
+    (70.0, 30.0, 80.0, 40.0),
+    (70.0, 10.0, 80.0, 20.0),
+]
+
+SMT_DT = 2.5
+SMT_T = math.ceil(TIME_BOUND / SMT_DT)
+SMT_VMIN, SMT_VMAX = -SMT_DT, SMT_DT
+
+MILP_DT = 3.0
+MILP_T = math.ceil(TIME_BOUND / MILP_DT)
+MILP_DTHETA = 45 * DEG2RAD
+MILP_VMIN, MILP_VMAX = 0.0, MILP_DT
+MILP_WMIN, MILP_WMAX = -90.0 * DEG2RAD, 90.0 * DEG2RAD
+MILP_THMIN, MILP_THMAX = -22.5 * DEG2RAD, 112.5 * DEG2RAD
