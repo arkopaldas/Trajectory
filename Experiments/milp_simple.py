@@ -4,30 +4,13 @@ import pulp
 import matplotlib.pyplot as plt
 from pulp import PulpSolverError
 
+from config import (
+    OPTIMIZE, START_REGION, GOAL_REGION,
+    MILP_SIMPLE_DT as DT, MILP_SIMPLE_T as T, MILP_SIMPLE_VMIN as VMIN, MILP_SIMPLE_VMAX as VMAX,
+    MILP_SIMPLE_MARGIN as MARGIN, MILP_SIMPLE_BIG_M as BIG_M, MILP_SIMPLE_OBSTACLES as OBSTACLES
+)
+
 start_time = time.time()
-
-time_bound = 50.0
-dt = 3.0
-T = math.ceil(time_bound / dt)
-Vmin, Vmax = -dt, dt
-optimize = True
-margin = 3.0
-BIG_M = 1000
-
-start_region = (0, 0, 10, 10)
-goal_region = (90, 90, 100, 100)
-
-obstacles = [
-    {"type": "rectangle", "params": (20.0, 20.0, 30.0, 30.0)},
-    {"type": "rectangle", "params": (40.0, 20.0, 50.0, 30.0)},
-    {"type": "rectangle", "params": (20.0, 40.0, 30.0, 50.0)},
-    {"type": "rectangle", "params": (20.0, 70.0, 30.0, 80.0)},
-    {"type": "rectangle", "params": (40.0, 60.0, 50.0, 70.0)},
-    {"type": "rectangle", "params": (50.0, 40.0, 60.0, 50.0)},
-    {"type": "rectangle", "params": (70.0, 30.0, 80.0, 40.0)},
-    {"type": "rectangle", "params": (70.0, 10.0, 80.0, 20.0)},
-    {"type": "circle", "params": (70.0, 70.0, 5.0)},
-]
 
 def rectangle_to_halfspaces(rect):
     x1, y1, x2, y2 = rect
@@ -62,38 +45,36 @@ def get_halfspaces(obstacle):
 
 prob = pulp.LpProblem("Trajectory_Planning_MILP", pulp.LpMinimize)
 
-x = [pulp.LpVariable(f"x_{t}", lowBound=start_region[0], upBound=goal_region[2]) for t in range(T+1)]
-y = [pulp.LpVariable(f"y_{t}", lowBound=start_region[1], upBound=goal_region[3]) for t in range(T+1)]
-vx = [pulp.LpVariable(f"vx_{t}", lowBound=Vmin, upBound=Vmax) for t in range(T)]
-vy = [pulp.LpVariable(f"vy_{t}", lowBound=Vmin, upBound=Vmax) for t in range(T)]
+x = [pulp.LpVariable(f"x_{t}", lowBound=START_REGION[0], upBound=GOAL_REGION[2]) for t in range(T+1)]
+y = [pulp.LpVariable(f"y_{t}", lowBound=START_REGION[1], upBound=GOAL_REGION[3]) for t in range(T+1)]
+vx = [pulp.LpVariable(f"vx_{t}", lowBound=VMIN, upBound=VMAX) for t in range(T)]
+vy = [pulp.LpVariable(f"vy_{t}", lowBound=VMIN, upBound=VMAX) for t in range(T)]
 
-prob += x[0] >= start_region[0]
-prob += x[0] <= start_region[2]
-prob += y[0] >= start_region[1]
-prob += y[0] <= start_region[3]
+prob += x[0] >= START_REGION[0]
+prob += x[0] <= START_REGION[2]
+prob += y[0] >= START_REGION[1]
+prob += y[0] <= START_REGION[3]
 
-prob += x[T] >= goal_region[0]
-prob += x[T] <= goal_region[2]
-prob += y[T] >= goal_region[1]
-prob += y[T] <= goal_region[3]
+prob += x[T] >= GOAL_REGION[0]
+prob += x[T] <= GOAL_REGION[2]
+prob += y[T] >= GOAL_REGION[1]
+prob += y[T] <= GOAL_REGION[3]
 
 for t in range(T):
-    prob += x[t+1] == x[t] + vx[t] * dt
-    prob += y[t+1] == y[t] + vy[t] * dt
+    prob += x[t+1] == x[t] + vx[t] * DT
+    prob += y[t+1] == y[t] + vy[t] * DT
 
 for t in range(T+1):
-    for r, obstacle in enumerate(obstacles):
+    for r, obstacle in enumerate(OBSTACLES):
         halfspaces = get_halfspaces(obstacle)
         binaries = []
         for i, (a, b, c) in enumerate(halfspaces):
             bi = pulp.LpVariable(f"b_{t}_{r}_{i}", cat='Binary')
             binaries.append(bi)
-            prob += a*x[t] + b*y[t] >= (c + margin) - BIG_M*(1 - bi)
-
+            prob += a*x[t] + b*y[t] >= (c + MARGIN) - BIG_M*(1 - bi)
         prob += pulp.lpSum(binaries) >= 1
 
 step_lengths = []
-
 for t in range(T):
     dx = x[t+1] - x[t]
     dy = y[t+1] - y[t]
@@ -106,7 +87,7 @@ for t in range(T):
     step_lengths.append(adx + ady)
 total_path_length = pulp.lpSum(step_lengths)
 
-if optimize:
+if OPTIMIZE:
     prob += total_path_length
 
 solve_start = time.time()
@@ -114,7 +95,7 @@ used_solver = None
 try:
     prob.solve(pulp.HiGHS_CMD(msg=False))
     used_solver = "HiGHS"
-except (PulpSolverError, Exception) as e:
+except (PulpSolverError, Exception):
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     used_solver = "CBC (fallback)"
 solve_end = time.time()
@@ -122,52 +103,44 @@ solve_end = time.time()
 if pulp.LpStatus[prob.status] == "Optimal":
     trajectory = [(pulp.value(x[t]), pulp.value(y[t])) for t in range(T+1)]
     print(f"Trajectory found with length ≈ {pulp.value(total_path_length)}")
-    print(f"Total steps (T) = {T}, total time = {T*dt}")
+    print(f"Total steps (T) = {T}, total time = {T*DT}")
     print(f"Solver used: {used_solver}")
 
     fig, ax = plt.subplots(figsize=(6,6))
-
-    for obs in obstacles:
+    for obs in OBSTACLES:
         if obs["type"] == "rectangle":
             x1, y1, x2, y2 = obs["params"]
-            ax.add_patch(plt.Rectangle((x1-margin, y1-margin), (x2-x1)+2*margin, (y2-y1)+2*margin, color='red', alpha=0.3, hatch="///"))
+            ax.add_patch(plt.Rectangle((x1-MARGIN, y1-MARGIN), (x2-x1)+2*MARGIN, (y2-y1)+2*MARGIN, color='red', alpha=0.3, hatch="///"))
             ax.add_patch(plt.Rectangle((x1, y1), x2-x1, y2-y1, color='red', alpha=0.5))
-
         elif obs["type"] == "circle":
             cx, cy, r = obs["params"]
-            ax.add_patch(plt.Circle((cx, cy), r+margin, color='red', alpha=0.3, hatch="///"))
+            ax.add_patch(plt.Circle((cx, cy), r+MARGIN, color='red', alpha=0.3, hatch="///"))
             ax.add_patch(plt.Circle((cx, cy), r, color='red', alpha=0.5))
-
         elif obs["type"] == "polygon":
             verts = obs["params"]
             ax.add_patch(plt.Polygon(verts, color='red', alpha=0.5))
 
-    sx1, sy1, sx2, sy2 = start_region
-    gx1, gy1, gx2, gy2 = goal_region
+    sx1, sy1, sx2, sy2 = START_REGION
+    gx1, gy1, gx2, gy2 = GOAL_REGION
 
     ax.add_patch(plt.Rectangle((sx1, sy1), sx2-sx1, sy2-sy1, color='green', alpha=0.5))
     ax.add_patch(plt.Rectangle((gx1, gy1), gx2-gx1, gy2-gy1, color='blue', alpha=0.5))
 
     xs, ys = zip(*trajectory)
     ax.plot(xs, ys, marker='o', color='black', markersize=2, linewidth=1)
-
-    ax.set_xlim(0, goal_region[2])
-    ax.set_ylim(0, goal_region[3])
-    ax.set_title(f"Optimal Trajectory (dt={dt}, time_bound={time_bound}, steps={T}, margin={margin})\n")
+    ax.set_xlim(0, GOAL_REGION[2])
+    ax.set_ylim(0, GOAL_REGION[3])
     ax.set_aspect('equal')
-
     plt.show()
-
 else:
     print("No valid trajectory found")
 
 end_time = time.time()
-
 build_time_ms = (solve_start - start_time) * 1000
 solve_time_ms = (solve_end - solve_start) * 1000
 total_time_ms = (end_time - start_time) * 1000
 
 print(f"\n--- Timing Summary ---")
-print(f"Model build time: {build_time_ms:.3f} ms  ({build_time_ms/1000:.6f} s)")
-print(f"Solving time:     {solve_time_ms:.3f} ms  ({solve_time_ms/1000:.6f} s)")
-print(f"Total runtime:    {total_time_ms:.3f} ms  ({total_time_ms/1000:.6f} s)\n")
+print(f"Model build time: {build_time_ms:.3f} ms")
+print(f"Solving time:     {solve_time_ms:.3f} ms")
+print(f"Total runtime:    {total_time_ms:.3f} ms\n")
