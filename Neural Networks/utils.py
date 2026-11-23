@@ -1,3 +1,10 @@
+"""Shared helpers for the neural-network scripts: loading the CSV, the physics used inside the loss, the training and
+evaluation loops, the ONNX export and the plots / rollout GIF used by the predict_*.py scripts.
+
+Key idea: the network only predicts the CONTROL. The next state is computed from the control with the known kinematics
+(compute_next_state), so the loss is measured in state space, as in the solver data. With ROLLOUT_HORIZON > 1 the
+network is fed its own predicted states (rollout_states), which trains it to stay accurate over several steps.
+"""
 import os
 import ast
 import warnings
@@ -10,11 +17,14 @@ from matplotlib import animation
 import config
 from progress import progress
 
+# Avoids 'too many open files' errors when the DataLoader uses several worker processes.
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+# Converts a Python literal stored as text in the CSV (DATA POINTS, START, GOAL, OBSTACLES) back into a Python object.
 def parse(obj):
     return ast.literal_eval(obj)
 
+# Flattens up to MAX_OBSTACLES obstacle rectangles into one fixed-length vector (zero padded). Not used at the moment.
 def encode_obstacles(obstacles):
     vec = []
     for obs in obstacles[:config.MAX_OBSTACLES]:
@@ -23,6 +33,8 @@ def encode_obstacles(obstacles):
         vec.extend([0, 0, 0, 0])
     return np.array(vec, dtype=np.float32)
 
+# Reads '<DATASET_PATH>/<name>' in chunks (so a progress bar can show how much of the file has been read) and returns one
+# dataframe. If no name is given, it is asked on the console.
 def upload_csv(name=None):
     if name is None:
         name = input("Enter CSV filename: ")
@@ -65,6 +77,10 @@ def compute_normalization(X, Y, N):
     return {k: np.asarray(v, dtype=np.float32) for k, v in stats.items()}
 
 # --------------------------------------------------------------------------- kinematics and loss
+# Applies the exact kinematics to a batch of states and controls.
+#   simple:   next = state + control * dt
+#   unicycle: x' = x + v cos(theta) dt, y' = y + v sin(theta) dt, theta' = wrap(theta + omega dt)
+# This is the same model the verifier encodes, so what is trained is what is later verified.
 def compute_next_state(state, control, model_type, dt):
     if model_type == 'simple':
         return state + control * dt
@@ -108,6 +124,9 @@ def normalized_loss(err, state_std, model_type):
     return torch.sum(per_axis * weights) / torch.sum(weights)
 
 # --------------------------------------------------------------------------- training / evaluation
+# Trains with Adam on the state-space loss. Per epoch it shows the z-score loss and the position RMSE as a percentage of
+# `scale` (the workspace diagonal). lr / epochs default to config.LR / config.EPOCHS. disp='bar' uses the live progress bar,
+# disp='print' prints one line per epoch. NOTE: no validation, early stopping or learning-rate schedule is applied.
 def train_model(model, train_loader, model_type, dt, scale, lr=None, epochs=None, disp="bar"):
     if lr is None:
         lr = config.LR
@@ -116,32 +135,41 @@ def train_model(model, train_loader, model_type, dt, scale, lr=None, epochs=None
     if disp not in ("bar", "print"):
         raise ValueError("disp must be 'bar' or 'print'")
 
+    # Plain Adam, no weight decay and no learning-rate schedule.
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     batches = len(train_loader)
+    # One progress bar for the whole training (units = batches); it is replaced by plain prints when disp='print'.
     bar = progress(total=epochs * batches, desc="Training", unit="batch") if disp == "bar" else None
 
     try:
         for epoch in range(epochs):
+            # Training mode (enables training-time behaviour of layers; this network has none, but it keeps the code correct if some are added).
             model.train()
             total_loss, total_pos = 0.0, 0.0
             if bar is not None:
                 bar.set_description(f"Training epoch {epoch + 1}/{epochs}", refresh=False)
+            # xb = start states, yb = controls from the data (not needed: the loss compares STATES), nb = true following states.
+            # The prediction is unrolled through the physics and compared with the data; gradients are clipped before the Adam step.
             for xb, yb, nb in train_loader:
                 pred = rollout_states(model, xb, model_type, dt, nb.shape[1])
                 err = state_error(pred, nb, model_type)
+                # The state error is divided by the state standard deviation (model.in_std), so x, y and theta are on comparable scales.
                 loss = normalized_loss(err, model.in_std, model_type)
 
                 optimizer.zero_grad()
                 loss.backward()
+                # Gradient clipping, then the optimiser step.
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRADIENT_CLIP)
                 optimizer.step()
 
                 total_loss += loss.item()
+                # Bookkeeping for the progress display: mean squared position error of this batch.
                 total_pos += torch.mean(torch.sum(err[..., :2] ** 2, dim=-1)).item()
                 if bar is not None:
                     bar.update(1)
 
             avg_loss = total_loss / batches
+            # Position RMSE of the epoch as a fraction of `scale` (the workspace diagonal).
             norm_rmse = np.sqrt(total_pos / batches) / scale
             if bar is not None:
                 bar.set_postfix({"Loss(z)": f"{avg_loss:.4f}", "Pos RMSE": f"{norm_rmse*100:.2f}%"}, refresh=False)
@@ -152,7 +180,11 @@ def train_model(model, train_loader, model_type, dt, scale, lr=None, epochs=None
             bar.close()
     return model
 
+# Runs the model on the test split without gradients and prints the test loss and the RMSE of x, y (and theta), as a
+# percentage of the given scales. For multi-step horizons it also prints the position error per rollout step.
+# Returns (predictions, ground truth) as 2-D arrays.
 def evaluate_model(model, test_loader, model_type, dt, scale, theta_scale=None):
+    # ---- evaluate_model: no gradients; the loss and the raw predictions are collected over the whole test split ----
     model.eval()
     total_loss = 0.0
     preds, true = [], []
@@ -169,6 +201,7 @@ def evaluate_model(model, test_loader, model_type, dt, scale, theta_scale=None):
     err = preds - true
     if model_type == 'unicycle':
         err[..., 2] = wrap_angle(err[..., 2])
+    # RMSE per state axis and overall position RMSE (Euclidean), all in physical units.
     per_axis_rmse = np.sqrt(np.mean(err ** 2, axis=(0, 1)))
     pos_rmse = np.sqrt(np.mean(np.sum(err[..., :2] ** 2, axis=-1)))
     avg_loss = total_loss / len(test_loader)
@@ -187,9 +220,12 @@ def evaluate_model(model, test_loader, model_type, dt, scale, theta_scale=None):
 def export_onnx(model, input_dim, path):
     """Export with the normalisation folded into the first/last layer: raw state in, raw control out."""
     model.eval()
+    # Export the FOLDED network (normalisation merged into the first / last layer): it takes raw states and returns raw controls.
     folded = model.folded_network()
     device = next(model.parameters()).device
+    # A dummy input only fixes the tensor shapes for tracing; the batch dimension is declared dynamic below.
     dummy_input = torch.randn(1, input_dim, device=device)
+    # Settings shared by both exporters: constant folding, tensor names 'input' / 'output' (used by predict_*.py and the verifier).
     common = dict(export_params=True, do_constant_folding=True, input_names=['input'], output_names=['output'],
                   dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}})
     try:   # legacy exporter: a single self-contained .onnx file and it honours the requested opset
@@ -200,6 +236,7 @@ def export_onnx(model, input_dim, path):
         print(f"[ONNX Generation] legacy exporter unavailable ({type(err).__name__}); using the default exporter, opset 18")
         torch.onnx.export(folded, dummy_input, path, opset_version=18, **common)
     try:   # sanity check: the ONNX file must reproduce the trained model on raw inputs
+        # Sanity check (skipped if onnxruntime is not installed): the ONNX file must give the same controls as the PyTorch model.
         import onnxruntime as ort
         probe = (model.in_mean + model.in_std * torch.randn(16, input_dim, device=device)).detach()
         with torch.no_grad():
@@ -210,6 +247,7 @@ def export_onnx(model, input_dim, path):
         pass
 
 # --------------------------------------------------------------------------- plots
+# Draws the start region (green), goal region (blue) and the rectangular obstacles (gray) into the current matplotlib axes.
 def plot_environment(start, goal, obstacles):
     plt.gca().add_patch(plt.Rectangle((start[0], start[1]), start[2]-start[0], start[3]-start[1], color="green", alpha=0.5))
     plt.gca().add_patch(plt.Rectangle((goal[0], goal[1]), goal[2]-goal[0], goal[3]-goal[1], color="blue", alpha=0.5))
@@ -217,14 +255,18 @@ def plot_environment(start, goal, obstacles):
         x1, y1, x2, y2 = obs
         plt.gca().add_patch(plt.Rectangle((x1, y1), x2-x1, y2-y1, color="gray", alpha=0.5))
 
+# Two figures: (1) true vs predicted path, (2) the control vectors (as arrows in the plane) along both paths. For the
+# unicycle the forward speed is turned into an (x, y) vector with the heading.
 def plot_trajectory_and_field(true_pos, pred_pos, true_vel, pred_vel, start, goal, obstacles, model_type='simple'):
     if model_type == 'unicycle':
+        # For the unicycle the control (v, omega) is drawn as an arrow in the plane: direction = heading theta, length = speed v.
         true_theta, pred_theta = true_pos[:, 2], pred_pos[:, 2]
         true_vel_xy = np.stack([true_vel[:, 0] * np.cos(true_theta), true_vel[:, 0] * np.sin(true_theta)], axis=1)
         pred_vel_xy = np.stack([pred_vel[:, 0] * np.cos(pred_theta), pred_vel[:, 0] * np.sin(pred_theta)], axis=1)
     else:
         true_vel_xy, pred_vel_xy = true_vel, pred_vel
 
+    # Figure 1: the true and the predicted path in the workspace.
     plt.figure(figsize=(5, 5))
     plt.plot(true_pos[:, 0], true_pos[:, 1], 'k-', label="True Trajectory")
     plt.plot(pred_pos[:, 0], pred_pos[:, 1], 'r--', label="Predicted Trajectory")
@@ -236,6 +278,7 @@ def plot_trajectory_and_field(true_pos, pred_pos, true_vel, pred_vel, start, goa
     plt.show()
 
     plt.figure(figsize=(5, 5))
+    # Figure 2: the 'velocity field' = control arrows along the true (black) and predicted (red) path.
     plt.quiver(true_pos[:, 0], true_pos[:, 1], true_vel_xy[:, 0], true_vel_xy[:, 1], color='black', alpha=0.25, label="True Field Vector")
     plt.quiver(pred_pos[:, 0], pred_pos[:, 1], pred_vel_xy[:, 0], pred_vel_xy[:, 1], color='red', alpha=0.25, label="Pred Field Vector")
     plot_environment(start, goal, obstacles)
@@ -250,6 +293,7 @@ def _arrow_headings(pos, model_type):
     if model_type == 'unicycle':
         return np.asarray(pos[:, 2], dtype=float)
     delta = np.diff(pos[:, :2], axis=0)
+    # Direction of travel of every segment; zero-length segments keep the previous direction (so the arrow does not flip).
     heads = np.arctan2(delta[:, 1], delta[:, 0])
     moved = np.hypot(delta[:, 0], delta[:, 1]) > 1e-9
     last = next((h for h, m in zip(heads, moved) if m), 0.0)   # standing still keeps the previous heading
@@ -266,6 +310,8 @@ def animate_rollout(pred_pos, start, goal, obstacles, path, model_type='simple')
     """
     pred_pos = np.asarray(pred_pos, dtype=float)
     heads = _arrow_headings(pred_pos, model_type)
+    # Interpolate between two time steps (GIF_FRAMES_PER_STEP frames) so that the animation looks smooth; the heading is
+    # interpolated along the shortest turn (wrap_angle).
     frames_per_step = max(1, int(config.GIF_FRAMES_PER_STEP))
 
     pts, ths = [], []
@@ -277,18 +323,22 @@ def animate_rollout(pred_pos, start, goal, obstacles, path, model_type='simple')
     pts.append(pred_pos[-1, :2]); ths.append(heads[-1])
     pts, ths = np.array(pts), np.array(ths)
     steps = np.minimum(np.arange(len(pts)) / frames_per_step, len(pred_pos) - 1)
+    # The last frame is repeated for GIF_HOLD_SECONDS so that the end of the path stays visible.
     hold = int(round(config.GIF_HOLD_SECONDS * config.GIF_FPS))
     frame_ids = list(range(len(pts))) + [len(pts) - 1] * hold
 
     corners = [(start[0], start[1]), (start[2], start[3]), (goal[0], goal[1]), (goal[2], goal[3])]
     corners += [(o[0], o[1]) for o in obstacles] + [(o[2], o[3]) for o in obstacles]
+    # Axis limits: everything that has to be visible (start, goal, obstacles, path) plus a margin.
     allpts = np.vstack([np.array(corners, dtype=float), pred_pos[:, :2]])
     pad = max(config.GIF_ARROW_LENGTH, 0.05 * float(np.ptp(allpts, axis=0).max()))
     lo, hi = allpts.min(axis=0) - pad, allpts.max(axis=0) + pad
 
     L, W = config.GIF_ARROW_LENGTH, config.GIF_ARROW_WIDTH
+    # Arrow (triangle) in its own coordinates, pointing along +x; arrow_xy rotates and moves it.
     local = np.array([[L * 0.65, 0.0], [-L * 0.35, W * 0.5], [-L * 0.35, -W * 0.5]])
 
+    # Arrow polygon rotated by th and moved to p.
     def arrow_xy(p, th):
         c, s = np.cos(th), np.sin(th)
         return (np.array([[c, -s], [s, c]]) @ local.T).T + p
@@ -307,6 +357,7 @@ def animate_rollout(pred_pos, start, goal, obstacles, path, model_type='simple')
                     bbox=dict(boxstyle="round", fc="white", alpha=0.8))
     ax.set_title("Predicted rollout")
 
+    # Redraws frame k: trail, arrow and the text label.
     def update(k):
         trail.set_data(pts[:k + 1, 0], pts[:k + 1, 1])
         robot.set_xy(arrow_xy(pts[k], ths[k]))
@@ -315,6 +366,7 @@ def animate_rollout(pred_pos, start, goal, obstacles, path, model_type='simple')
         return trail, robot, label
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    # Render the frames into a GIF (Pillow writer) and show a progress bar while it is written.
     anim = animation.FuncAnimation(fig, lambda i: update(frame_ids[i]), frames=len(frame_ids), blit=False)
     bar = progress(total=len(frame_ids), desc="Rendering GIF", unit="frame")
     try:

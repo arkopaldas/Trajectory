@@ -1,3 +1,14 @@
+"""The verification itself: decides, cell by cell, whether the closed loop (trained network + true dynamics) can violate a
+safety constraint, and returns SAFE / UNSAFE / UNKNOWN.
+
+How it works
+  1. The start region (and, for the unicycle, the heading range) is split into cells (config.START_CELLS_*).
+  2. For each cell and each step k = 0..T a Marabou query asks: is there a start state in this cell whose closed-loop rollout
+     violates an active constraint at step k? (job_list / job_property)
+  3. UNSAT for all queries of all cells = SAFE. A SAT answer is replayed on the true dynamics (utils.exact_rollout); only a
+     replayed violation counts as a counterexample (UNSAFE). Anything else (timeout, SAT that does not replay) = UNKNOWN.
+Counterexamples are appended to Datasets/Counterexamples and a per-cell table is saved to Verification/Results.
+"""
 import time
 import numpy as np
 
@@ -7,6 +18,7 @@ import utils
 from marabou_encoder import Encoding, build_rollout, get_spec
 
 
+# Fails early with an install hint if Maraboupy is missing.
 def check_marabou():
     try:
         import maraboupy   # noqa: F401
@@ -22,6 +34,7 @@ def job_list(env):
     GOAL_MODE "final" adds the goal check to step T; "any" adds one extra query: no state s_0..s_T is in the goal.
     """
     jobs = []
+    # One query per step k = 0..T (only those with something to check).
     for k in range(env.T + 1):
         has_u = k < env.T and "control" in constraints.active_constraints(env)
         has_goal = k == env.T and config.GOAL_MODE == "final"
@@ -36,6 +49,7 @@ def job_property(env, states, controls, k, kind):
     """The violation to look for, as a conjunction of disjunctions of bound cases on the query variables."""
     eps = config.PROPERTY_EPS
 
+    # Maps atom coordinates (0 = x, 1 = y, 2 = theta / control index) to the Marabou variables of the state or control vector.
     def on(atoms, variables):
         return [[(int(variables[c]), lo, hi) for c, lo, hi in case] for case in atoms]
 
@@ -56,14 +70,18 @@ def check_job(env, layers, spec, session, cell, k, kind, deadline):
     counterexample), or 'unknown' (timeout, or a Marabou SAT that does not replay on the true dynamics even after refining).
     """
     stats = {"queries": 0, "by_bounds": 0, "spurious": 0, "build_s": 0.0, "solve_s": 0.0}
+    # Encoding refinement levels: the unicycle is retried with finer piecewise-linear bands if a SAT does not replay.
     levels = range(config.MAX_REFINEMENTS + 1) if env.model == "unicycle" else [0]   # the Simple model is encoded exactly
     for level in levels:
         t0 = time.time()
+        # Number of policy copies in the query: controls u_0..u_(k-1) drive the dynamics up to s_k; u_k is added only if the
+        # property also concerns the control at step k.
         n_controls = k + 1 if (k < env.T and kind == "step" and "control" in constraints.active_constraints(env)) else k
         q, states, controls = build_rollout(env, layers, spec, cell, k, n_controls, Encoding(level))
         for cases in job_property(env, states, controls, k, kind):
             q.add_property(cases, config.USE_BOUND_PRUNING)
         stats["build_s"] += time.time() - t0
+        # The propagated bounds already prove that no violation exists: no Marabou call needed.
         if q.infeasible and config.USE_BOUND_PRUNING:
             stats["by_bounds"] += 1
             return "unsat", None, stats
@@ -77,6 +95,8 @@ def check_job(env, layers, spec, session, cell, k, kind, deadline):
         if status != "sat":
             return ("unsat" if status == "unsat" else "unknown"), None, stats
         # Marabou found a start state. Trust it only if the true closed-loop rollout really violates a constraint.
+        # Marabou found a start state. Trust it only if the exact closed-loop rollout (true dynamics, onnxruntime) really violates a
+        # constraint; the bands around cos / sin / products could have allowed a spurious solution.
         x0 = np.clip(np.array([values[int(v)] for v in q.start_vars]), cell[0], cell[1])
         rolled_states, rolled_controls = utils.exact_rollout(env, session, x0)
         violations = constraints.trajectory_violation(env, rolled_states, rolled_controls)
@@ -108,6 +128,7 @@ def run_verification(model, onnx_path=None, max_counterexamples=1, save=True):
     print(f"[{config.MODELS[model]['name']} verification] active constraints: {', '.join(constraints.active_constraints(env))} "
           f"(goal mode: {config.GOAL_MODE}) | {len(cells)} start cells x {len(jobs)} queries | horizon T = {env.T}")
 
+    # ---- Main loop over the start cells; stops early once max_counterexamples counterexamples have been collected ----
     rows, counterexamples, unknown, processed = [], [], False, 0
     for index, cell in enumerate(cells):
         if time.time() > deadline:
@@ -138,6 +159,7 @@ def run_verification(model, onnx_path=None, max_counterexamples=1, save=True):
         if len(counterexamples) >= max_counterexamples:
             break
 
+    # Final verdict: UNSAFE if a replayed counterexample exists, UNKNOWN if something was inconclusive or not processed, else SAFE.
     if counterexamples:
         verdict = "UNSAFE"
     elif unknown or processed < len(cells):

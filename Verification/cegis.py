@@ -1,3 +1,14 @@
+"""CEGIS: counterexample-guided fine-tuning of a trained network until it verifies as safe.
+
+Loop:  verify (Marabou) -> collect counterexample start states -> fine-tune the network on
+           L_total = L_ori + LAMBDA_CE * L_ce
+       -> export '<Model>_CEGIS.onnx' (next to the original, which is never touched) -> verify again ...
+L_ori is exactly the original training loss (the network keeps imitating the expert data). L_ce rolls the CURRENT network out
+from the stored counterexample start states with the true, differentiable dynamics and penalises every violation of the active
+safety constraints (constraints.ce_penalties), pushing those trajectories to the safe side.
+All counterexamples of all rounds are kept (Datasets/Counterexamples) and reused in every fine-tuning round.
+Result of run_cegis: 'SAFE', 'UNRESOLVED' (iteration / time limit) or 'UNKNOWN' (nothing to learn from and no proof).
+"""
 import os
 import sys
 import time
@@ -16,6 +27,8 @@ def load_training_code():
     Imports 'Neural Networks/utils.py', 'dataset.py' and 'Arch' (same loss, same data windows, same ONNX export as the training
     scripts). Both folders have a config.py / utils.py, so the names are swapped out while importing and restored afterwards.
     """
+    # Both 'Neural Networks' and 'Verification' contain modules called config and utils, so the Verification versions are
+    # removed from sys.modules while the training code is imported, and put back afterwards.
     clashing = lambda name: name in ("config", "utils", "progress", "dataset", "Arch") or name.startswith("Arch.")
     saved = {k: v for k, v in sys.modules.items() if clashing(k)}
     for k in saved:
@@ -40,6 +53,7 @@ def model_from_layers(net_class, layers):
     import torch
     import torch.nn as nn
     model = net_class()
+    # Copy the weights of the ONNX network (normalisation already folded in) into a fresh PyTorch network of the same architecture.
     linears = [m for m in model.net if isinstance(m, nn.Linear)]
     if len(linears) != len(layers):
         raise ValueError("The ONNX network does not have the architecture of the Arch class")
@@ -59,6 +73,7 @@ def counterexample_loss(model, x0, env, nn_utils):
     import torch
     states, controls, s = [x0], [], x0
     for _ in range(env.T):
+        # Differentiable closed loop: policy -> true dynamics, T times; then the penalties of all active constraints are summed.
         u = model(s)
         s = nn_utils.compute_next_state(s, u, env.model, env.dt)
         controls.append(u)
@@ -87,8 +102,10 @@ def finetune(model, train_loader, state_std, ce_starts, env, nn_utils, nn_config
         xb, yb, nb = next(batches)
         pred = nn_utils.rollout_states(model, xb, env.model, env.dt, nb.shape[1])
         l_ori = nn_utils.normalized_loss(nn_utils.state_error(pred, nb, env.model), state_std, env.model)
+        # Random mini-batch of stored counterexample start states for this step.
         pick = ce[torch.randint(len(ce), (min(config.CE_BATCH, len(ce)),))]
         l_ce, parts = counterexample_loss(model, pick, env, nn_utils)
+        # L_total = L_ori (keep imitating the expert) + LAMBDA_CE * L_ce (stay safe on the counterexamples).
         loss = l_ori + config.LAMBDA_CE * l_ce
 
         optimizer.zero_grad()
@@ -111,6 +128,7 @@ def run_cegis(model_name):
     env = utils.Environment(model_name)
     nn_utils, nn_dataset, net_classes, nn_config = load_training_code()
     cegis_path = utils.cegis_network_file(model_name)
+    # Start from the previous CEGIS network when CEGIS_RESUME is True, otherwise from the original trained network.
     start_path = cegis_path if (config.CEGIS_RESUME and os.path.isfile(cegis_path)) else os.path.join(config.NETWORK_PATH, info["onnx"] + ".onnx")
 
     # data of the original loss (same filtering and windows as the training scripts)
@@ -129,12 +147,15 @@ def run_cegis(model_name):
     current_path = start_path
     started = time.time()
 
+    # ---- CEGIS loop: each iteration verifies the current network and, if it is not safe, fine-tunes it ----
     for iteration in range(1, config.MAX_CEGIS_ITERATIONS + 1):
         print(f"\n===== [{info['name']} CEGIS] iteration {iteration}/{config.MAX_CEGIS_ITERATIONS} | verifying {current_path} =====")
+        # Verify the current network; collect up to MAX_COUNTEREXAMPLES counterexamples (they are appended to the counterexample CSV).
         result = run_verification(model_name, onnx_path=current_path, max_counterexamples=config.MAX_COUNTEREXAMPLES)
         if result["verdict"] == "SAFE":
             print(f"[{info['name']} CEGIS] SAFE after {iteration - 1} fine-tuning round(s). Network: {current_path}")
             return "SAFE"
+        # Use every counterexample found so far (all rounds), not only the newest.
         starts = utils.load_counterexample_starts(env)      # every counterexample found so far, from all rounds
         if result["verdict"] == "UNKNOWN" or len(starts) == 0:
             print(f"[{info['name']} CEGIS] UNKNOWN: no counterexample to learn from and no proof of safety.")
@@ -144,6 +165,7 @@ def run_cegis(model_name):
         print(f"[{info['name']} CEGIS] fine-tuning on {len(starts)} stored counterexample start state(s)")
         model = finetune(model, train_loader, state_std, starts, env, nn_utils, nn_config)
         os.makedirs(config.NETWORK_PATH, exist_ok=True)
+        # Write '<Model>_CEGIS.onnx'; the next iteration verifies this file.
         nn_utils.export_onnx(model, env.state_dim, cegis_path)
         current_path = cegis_path
 

@@ -1,6 +1,10 @@
+"""Network for the UNICYCLE model: state (x, y, theta) -> control (v, omega).
+Same layout as SimpleNet (hidden widths 256-512-256-128-64, ReLU), but with 3 inputs.
+"""
 import torch.nn as nn
 from Arch.base import NormalizedNet
 
+# 3 inputs (x, y, theta), 2 outputs (v, omega). Normalisation comes from NormalizedNet.
 class UnicycleNet(NormalizedNet):
     def __init__(self):
         super().__init__(
@@ -20,6 +24,7 @@ class UnicycleNet(NormalizedNet):
             input_dim=3, output_dim=2
         )
 
+# Earlier, smaller architecture (two tanh layers) kept for reference; not used.
 # class UnicycleNet(NormalizedNet):
 #     def __init__(self, hidden_dim=64):
 #         super().__init__(

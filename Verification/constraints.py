@@ -1,3 +1,13 @@
+"""The safety constraints, defined once and used in three places.
+
+Every constraint is described by a VIOLATION DEGREE (a number that is > 0 on the unsafe side, e.g. how many distance units
+the robot is inside an obstacle). The same definition feeds
+  * the Marabou queries    (state_violation_atoms / control_violation_atoms / goal_violation_atoms: the unsafe region
+                            written as bounds on variables, so that Marabou can search for a violation),
+  * the exact replay       (trajectory_violation: the worst violation of a simulated closed-loop trajectory),
+  * the CEGIS loss         (ce_penalties: a differentiable number that is 0 when safe and grows with the violation).
+A constraint is switched on or off in config.py (CHECK_* flags and GOAL_MODE); switched-off constraints are ignored everywhere.
+"""
 import numpy as np
 
 import config
@@ -13,6 +23,8 @@ import config
 INF = float("inf")
 
 
+# Names of the constraints that are switched on in config.py ('control', 'obstacle', 'workspace', 'theta', 'goal').
+# 'theta' only exists for the unicycle (the simple model has no heading).
 def active_constraints(env):
     if config.GOAL_MODE not in ("final", "any", "off"):
         raise ValueError("config.GOAL_MODE must be 'final', 'any' or 'off'")
@@ -32,6 +44,7 @@ def active_constraints(env):
 
 # --------------------------------------------------------------------------- violation degrees
 # These work on numpy arrays and on torch tensors (xp = numpy or torch).
+# max(t, 0) for numpy arrays and for torch tensors (xp is the module numpy or torch).
 def _relu(xp, t):
     return xp.clamp(t, min=0.0) if xp.__name__ == "torch" else np.maximum(t, 0.0)
 
@@ -41,12 +54,15 @@ def _tsum(xp, t):
     return t.sum(dim=1) if xp.__name__ == "torch" else t.sum(axis=1)
 
 
+# Minimum over the time axis (axis 1).
 def _tmin(xp, t):
     return t.min(dim=1).values if xp.__name__ == "torch" else t.min(axis=1)
 
 
 def obstacle_depths(env, x, y, xp=np):
     """One value per obstacle: how deep (L-infinity) the point is inside the obstacle inflated by the margin. > 0 = inside."""
+    # Depth inside the inflated obstacle: the smaller of the distances to the nearest x-side and y-side (L-infinity). It is > 0
+    # only when both are positive, i.e. when the point is inside the inflated rectangle.
     m = env.margin
     depths = []
     for x1, y1, x2, y2 in env.obstacles:
@@ -56,20 +72,24 @@ def obstacle_depths(env, x, y, xp=np):
     return depths
 
 
+# How far the point (x, y) is outside the workspace box (max over the four sides; > 0 = outside).
 def workspace_degree(env, x, y, xp=np):
     xmin, ymin, xmax, ymax = env.workspace
     return xp.maximum(xp.maximum(xmin - x, x - xmax), xp.maximum(ymin - y, y - ymax))
 
 
+# How far the point (x, y) is outside the goal box (max over the four sides; > 0 = not in the goal).
 def goal_degree(env, x, y, xp=np):
     gx1, gy1, gx2, gy2 = env.goal
     return xp.maximum(xp.maximum(gx1 - x, x - gx2), xp.maximum(gy1 - y, y - gy2))
 
 
+# How far the heading is outside [THMIN, THMAX] (> 0 = outside).
 def theta_degree(env, theta, xp=np):
     return xp.maximum(env.theta_bounds[0] - theta, theta - env.theta_bounds[1])
 
 
+# How far the control vector is outside its bounds (max over the components; > 0 = a bound is violated).
 def control_degree(env, u, xp=np):
     degree = None
     for j in range(len(env.ctrl_lo)):
@@ -88,6 +108,7 @@ def trajectory_violation(env, states, controls):
     active = active_constraints(env)
     x, y = states[:, 0], states[:, 1]
     out = {}
+    # Violation of each active constraint; the worst value over the whole trajectory is reported.
     if "control" in active:
         out["control"] = float(np.max(control_degree(env, controls)))
     if "obstacle" in active:
@@ -102,6 +123,7 @@ def trajectory_violation(env, states, controls):
     return out
 
 
+# True if any violation degree reaches eps (default CONFIRM_EPS). Used to confirm a Marabou counterexample.
 def is_unsafe(violations, eps=None):
     eps = config.CONFIRM_EPS if eps is None else eps
     return any(v >= eps for v in violations.values())
@@ -116,9 +138,11 @@ def state_violation_atoms(env, eps):
     if "obstacle" in active:
         m = env.margin
         for x1, y1, x2, y2 in env.obstacles:
+            # Obstacle atom: x and y both inside the inflated rectangle shrunk by eps (variable 0 = x, variable 1 = y).
             cases.append([(0, x1 - m + eps, x2 + m - eps), (1, y1 - m + eps, y2 + m - eps)])
     if "workspace" in active:
         xmin, ymin, xmax, ymax = env.workspace
+        # Workspace atoms: left of / right of / below / above the workspace box by at least eps.
         cases += [[(0, -INF, xmin - eps)], [(0, xmax + eps, INF)], [(1, -INF, ymin - eps)], [(1, ymax + eps, INF)]]
     if "theta" in active:
         cases += [[(2, -INF, env.theta_bounds[0] - eps)], [(2, env.theta_bounds[1] + eps, INF)]]
@@ -150,7 +174,10 @@ def ce_penalties(env, states, controls, xp):
     """
     active = active_constraints(env)
     xmin, ymin, xmax, ymax = env.workspace
+    # Normalisation: distances are divided by the workspace size and controls by their range, so the terms have comparable size.
     scale = max(xmax - xmin, ymax - ymin)
+    # Safety buffers: the penalty is already positive when a trajectory is closer than the buffer to the unsafe set,
+    # so fine-tuning moves it clearly away from the boundary (not just to it).
     sbuf, cbuf = config.CE_STATE_BUFFER, config.CE_CONTROL_BUFFER
     x, y = states[..., 0], states[..., 1]
     out = {}
@@ -158,12 +185,14 @@ def ce_penalties(env, states, controls, xp):
         total = 0.0
         for j in range(len(env.ctrl_lo)):
             span = float(env.ctrl_hi[j] - env.ctrl_lo[j])
+            # Control bounds: penalty for going below the lower or above the upper bound (plus buffer), summed over time.
             below = _relu(xp, env.ctrl_lo[j] - controls[..., j] + cbuf)
             above = _relu(xp, controls[..., j] - env.ctrl_hi[j] + cbuf)
             total = total + _tsum(xp, below + above) / span
         out["control"] = total
     if "obstacle" in active:
         total = 0.0
+        # Obstacle penalty: how deep (plus buffer) the trajectory is inside each inflated obstacle, summed over time.
         for depth in obstacle_depths(env, x, y, xp):
             total = total + _tsum(xp, _relu(xp, depth + sbuf)) / scale
         out["obstacle"] = total

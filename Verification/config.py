@@ -1,4 +1,13 @@
+"""All settings of the formal-verification / CEGIS module (the other scripts in this folder import this file as `config`).
+
+Sections: which network to verify -> which safety constraints are checked -> how the start region is split and how Marabou
+is run -> CEGIS (counterexample-guided fine-tuning) settings -> file paths and the per-model description table.
+The problem data itself (dt, horizon, start / goal region, obstacles, margin, control bounds) is NOT set here: it is read
+from the first row of the dataset CSV (see utils.Environment), so the verifier always checks the problem the network was
+trained for.
+"""
 import os
+# numpy is imported but not used in this file.
 import numpy as np
 
 # =====================================================================================================
@@ -72,6 +81,9 @@ COUNTEREXAMPLE_PATH = os.path.join(BASE_DIR, "..", "Datasets", "Counterexamples"
 RESULT_PATH = os.path.join(BASE_DIR, "Results", f"{DATASET_SIZE} Trained") + os.sep
 NEURAL_NETWORKS_PATH = os.path.join(BASE_DIR, "..", "Neural Networks")
 
+# One entry per model. name / onnx: file-name stems ('Simple' -> Simple.onnx). dataset: CSV with the expert trajectories.
+# state / control: names of the state and control components as used in the DATA POINTS column of the CSV.
+# ok_status: STATUS values of dataset rows that contain a usable trajectory (SAT for the Z3 data; Optimal / Feasible for the MILP data).
 MODELS = {
     "simple": {
         "name": "Simple", "onnx": "Simple", "dataset": "Simple Model Result.csv",

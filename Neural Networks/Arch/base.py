@@ -1,3 +1,11 @@
+"""Base class shared by all controller networks.
+
+NormalizedNet wraps a plain Linear / ReLU stack with z-score normalisation of the input (state) and of the output
+(control). The statistics are stored as buffers (saved with the model, never trained), so forward() always takes RAW
+states and returns RAW controls. For the ONNX export, folded_network() removes the normalisation again by folding the
+statistics into the first and last Linear layer, which gives a plain network that is easy for the verifier to encode.
+"""
+# copy: deep copy of the network when it is folded for export.
 import copy
 import torch
 import torch.nn as nn
@@ -12,6 +20,7 @@ class NormalizedNet(nn.Module):
     out * out_std + out_mean. The four statistics are buffers (saved with the model, not trained).
     """
 
+    # net: the Linear / ReLU stack. The four buffers start as identity statistics (mean 0, std 1).
     def __init__(self, net, input_dim, output_dim):
         super().__init__()
         self.net = net
@@ -20,11 +29,13 @@ class NormalizedNet(nn.Module):
         self.register_buffer("out_mean", torch.zeros(output_dim))
         self.register_buffer("out_std", torch.ones(output_dim))
 
+    # Loads the statistics (from utils.compute_normalization) into the buffers.
     def set_normalization(self, in_mean, in_std, out_mean, out_std):
         for name, value in (("in_mean", in_mean), ("in_std", in_std), ("out_mean", out_mean), ("out_std", out_std)):
             buf = getattr(self, name)
             buf.copy_(torch.as_tensor(value, dtype=buf.dtype, device=buf.device))
 
+    # raw state -> normalise -> network -> de-normalise -> raw control.
     def forward(self, x):
         z = (x - self.in_mean) / self.in_std
         return self.net(z) * self.out_std + self.out_mean

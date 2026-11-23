@@ -1,3 +1,11 @@
+"""Qualitative check of a trained UNICYCLE network on one random trajectory.
+
+Loads Unicycle.onnx, picks a random row of the dataset, starts from that trajectory's start state (x, y, theta) and lets the
+network drive closed-loop with the exact unicycle kinematics, then compares with the solver's trajectory: saves a rollout GIF
+('Unicycle_rollout.gif' next to the model) and shows the path and velocity-field plots.
+
+Run:  python predict_unicycle.py (from inside the Neural Networks folder)
+"""
 import os
 import numpy as np
 import onnxruntime as ort
@@ -8,6 +16,7 @@ from utils import parse, upload_csv, plot_trajectory_and_field, animate_rollout,
 if __name__ == "__main__":
     ONNX_PATH = os.path.join(config.NETWORK_PATH, "Unicycle.onnx")
     GIF_PATH = os.path.join(config.NETWORK_PATH, "Unicycle_rollout.gif")
+    # Load the exported network with ONNX Runtime and read a random trajectory (with its start / goal / obstacles / DT).
     session = ort.InferenceSession(ONNX_PATH)
     df = upload_csv("Unicycle Model Result.csv")
     row = df.iloc[np.random.randint(len(df))]
@@ -18,12 +27,14 @@ if __name__ == "__main__":
     obstacles = parse(row["OBSTACLES"])
     DT = row["DT"]
 
+    # Ground truth from the solver: states (x, y, theta) and controls (v, omega); None at the last point is replaced by 0.
     true_pos, true_vel = [], []
     for p in traj:
         true_pos.append([float(p["x"]), float(p["y"]), float(p["theta"])])
         true_vel.append([float(0 if p["v"] is None else p["v"]), float(0 if p["omega"] is None else p["omega"])])
 
     true_pos, true_vel = np.array(true_pos), np.array(true_vel)
+    # Closed-loop rollout: the network predicts (v, omega); the next state follows from the exact kinematics, with the heading wrapped to [-pi, pi].
     curr = true_pos[0]
     pred_pos = [curr]
     pred_vel = []
@@ -42,6 +53,7 @@ if __name__ == "__main__":
         pred_pos.append(curr)
         pred_vel.append(vel)
 
+    # Pad the predicted controls so they have as many entries as states (the last point has no control), then animate and plot.
     pred_vel = np.vstack([pred_vel, pred_vel[-1]])
     animate_rollout(np.array(pred_pos), start, goal, obstacles, GIF_PATH, model_type='unicycle')
     print(f"[Rollout GIF] Saved -> {GIF_PATH}")

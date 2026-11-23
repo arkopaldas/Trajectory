@@ -1,3 +1,14 @@
+"""Self-test of the verification encoding. It does NOT need Marabou.
+
+On random start states it checks that
+  1. the Linear / ReLU layers read from the ONNX file reproduce onnxruntime,
+  2. the constraint system that would be sent to Marabou contains the TRUE closed-loop trajectory (every propagated bound,
+     every cos / sin / product band and every angle wrap holds on the exact values),
+  3. the property atoms (what Marabou searches for) agree with the violation degrees used by the replay and the CEGIS loss.
+If this passes, a Marabou SAT / UNSAT is about the right problem. Run it after changing the encoder or the constraints.
+
+Run:  python selftest.py      (prints SELFTEST PASSED or the number of problems)
+"""
 import numpy as np
 
 import config
@@ -12,10 +23,12 @@ from marabou_encoder import Encoding, build_rollout, get_spec
 #   3. the property atoms agree with the violation degrees used by the replay and by the CEGIS loss.
 # If this passes, a Marabou SAT / UNSAT is about the right problem. Marabou itself is not needed.
 
+# SAMPLES: random start states per (cell, depth). DEPTHS: numbers of closed-loop steps that are encoded and tested.
 SAMPLES = 20
 DEPTHS = (1, 3, 8)
 
 
+# Runs the three checks for one model ('simple' or 'unicycle') and returns the number of problems found.
 def test_model(model, rng):
     env = utils.Environment(model)
     path = utils.network_file(model)
@@ -24,11 +37,14 @@ def test_model(model, rng):
     problems = 0
     tested = 0
 
+    # Check 1: layers extracted from the ONNX file vs. onnxruntime on random inputs.
     probe = rng.uniform(-5, 100, size=(256, env.state_dim)).astype(np.float32)
     err = np.max(np.abs(utils.forward(layers, probe) - session.run(["output"], {"input": probe})[0]))
     print(f"[{model}] max |extracted layers - onnxruntime| = {err:.2e}")
     problems += err > 1e-3
 
+    # Check 2: for the first, middle and last start cell and several depths, build the query and compare its numeric evaluation with the
+    # exact rollout. Samples whose applied controls leave their bounds are skipped (the encoding assumes they stay inside).
     for cell in [cells[0], cells[len(cells) // 2], cells[-1]]:
         for depth in DEPTHS:
             # if depth > env.T:
@@ -55,6 +71,7 @@ def test_model(model, rng):
     print(f"[{model}] {tested} sampled trajectories satisfied the control-bound assumption and were checked")
     problems += tested == 0
 
+    # Check 3: a random state lies in a violation atom exactly when its largest violation degree reaches PROPERTY_EPS.
     # property atoms versus violation degrees
     eps = config.PROPERTY_EPS
     for _ in range(2000):
@@ -75,6 +92,7 @@ def test_model(model, rng):
     return problems
 
 
+# Fixed seed, so the test is reproducible.
 if __name__ == "__main__":
     rng = np.random.default_rng(0)
     total = sum(test_model(m, rng) for m in ("simple", "unicycle"))
