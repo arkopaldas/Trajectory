@@ -20,12 +20,16 @@ window will pop up showing the training result animate live:
 If you just want to (re)generate a saved GIF instead of a live window,
 set SAVE_GIF = True below (or pass --save-gif on the command line).
 """
+# Note: the docstring above says 'unicycle_rl.py'; the file in this repository is called rl_unicycle.py.
+# This script has no dependency on the solvers: it only needs numpy and matplotlib (plus pillow to save a GIF).
 import os
 import sys
 import numpy as np
 import matplotlib
 
 # Check environment for displays
+# Without a display (e.g. a server) matplotlib must use the non-interactive 'Agg' backend, otherwise plt.show() would fail.
+# Windows and macOS always have a display; on Linux the DISPLAY variable decides.
 HAS_DISPLAY = bool(os.environ.get("DISPLAY")) or sys.platform in ("win32", "darwin")
 if not HAS_DISPLAY:
     matplotlib.use("Agg")
@@ -35,6 +39,7 @@ import matplotlib.animation as animation
 import matplotlib.patches as mpatches
 
 # Configuration Imports
+# All settings live in config.py (RL_* constants); they are renamed here without the prefix.
 from config import (
     RL_BOARD_SIZE as BOARD_SIZE, RL_START as START, RL_GOAL as GOAL, RL_GOAL_RADIUS as GOAL_RADIUS,
     RL_OBSTACLES as OBSTACLES, RL_V as V, RL_DT as DT, RL_OMEGA_ACTIONS as OMEGA_ACTIONS,
@@ -45,8 +50,11 @@ from config import (
     RL_RANDOM_SEED as RANDOM_SEED
 )
 
+# Seeded random generator, so training is reproducible.
 rng = np.random.default_rng(RANDOM_SEED)
 
+# Environment: a unicycle moving at constant speed V on a square board with circular obstacles. The agent only chooses the
+# turn rate omega out of a few discrete values. Heading is wrapped to [-pi, pi).
 class UnicycleEnv:
     def __init__(self):
         self.board_size = BOARD_SIZE
@@ -59,12 +67,14 @@ class UnicycleEnv:
         self.state = None
         self.prev_dist = None
 
+    # Puts the robot back to the start pose and returns the initial state (x, y, theta).
     def reset(self):
         x, y, theta = self.start
         self.state = np.array([x, y, theta], dtype=float)
         self.prev_dist = np.linalg.norm(self.state[:2] - self.goal)
         return self.state.copy()
 
+    # True if the point leaves the board or lies inside (or on) any circular obstacle.
     def _collides(self, x, y):
         if x <= 0.0 or x >= self.board_size or y <= 0.0 or y >= self.board_size:
             return True
@@ -73,6 +83,10 @@ class UnicycleEnv:
                 return True
         return False
 
+    # Applies one action. Returns (next_state, reward, done).
+    # The position is advanced with the OLD heading and the heading is then turned (same order as the other models).
+    # Reward: -50 and the episode ends on a collision (the robot stays where it was), otherwise -0.1 per step plus
+    # 2 * (reduction of the distance to the goal), and +100 and the episode ends when the goal radius is reached.
     def step(self, action_idx):
         x, y, theta = self.state
         omega = self.actions[action_idx]
@@ -99,6 +113,7 @@ class UnicycleEnv:
             done = True
         return self.state.copy(), reward, done
 
+# Maps the continuous state (x, y, theta) to integer bin indices of the Q-table (values are clipped to the valid range).
 def discretize(state):
     x, y, theta = state
     xi = int(np.clip(x / BOARD_SIZE * N_X_BINS, 0, N_X_BINS - 1))
@@ -107,26 +122,32 @@ def discretize(state):
     ti = int(np.clip(theta_norm * N_THETA_BINS, 0, N_THETA_BINS - 1))
     return xi, yi, ti
 
+# Tabular Q-learning agent: Q[x_bin, y_bin, theta_bin, action].
 class QLearningAgent:
     def __init__(self, n_actions):
         self.n_actions = n_actions
         self.Q = np.zeros((N_X_BINS, N_Y_BINS, N_THETA_BINS, n_actions))
 
+    # Epsilon-greedy: random action with probability epsilon, otherwise the best known action.
     def choose_action(self, s_idx, epsilon):
         if rng.random() < epsilon:
             return rng.integers(0, self.n_actions)
         return int(np.argmax(self.Q[s_idx]))
 
+    # Q-learning update: Q(s,a) += alpha * (r + gamma * max_a' Q(s',a') - Q(s,a)); no bootstrap term in terminal states.
     def update(self, s_idx, a, reward, s_next_idx, done):
         best_next = 0.0 if done else np.max(self.Q[s_next_idx])
         td_target = reward + GAMMA * best_next
         td_error = td_target - self.Q[s_idx][a]
         self.Q[s_idx][a] += ALPHA * td_error
 
+# Linear decay of the exploration rate from EPS_START to EPS_END over EPS_DECAY_EPISODES episodes, constant afterwards.
 def epsilon_by_episode(ep):
     frac = min(ep / EPS_DECAY_EPISODES, 1.0)
     return EPS_START + frac * (EPS_END - EPS_START)
 
+# Runs N_EPISODES episodes of epsilon-greedy Q-learning. Prints progress every 500 episodes (with the success rate over
+# the last 200 episodes) and returns the environment and the trained agent.
 def train():
     env = UnicycleEnv()
     agent = QLearningAgent(env.n_actions)
@@ -158,6 +179,7 @@ def train():
             print(f"Episode {ep + 1:5d}/{N_EPISODES} | eps={epsilon:.3f} | reward={total_reward:7.2f} | recent success rate={rate:5.1f}%")
     return env, agent
 
+# Follows the learned policy greedily (no exploration) and records the visited states. Returns (trajectory array, reached_goal).
 def rollout(env, agent, max_steps=300):
     state = env.reset()
     trajectory = [state.copy()]
@@ -171,14 +193,18 @@ def rollout(env, agent, max_steps=300):
     reached = np.linalg.norm(state[:2] - env.goal) <= env.goal_radius
     return np.array(trajectory), reached
 
+# Corner points of the triangle that represents the robot (pointing along +x in its own coordinate frame).
 def make_arrow_vertices(length=0.55, width=0.30):
     return np.array([[length * 0.65, 0.0], [-length * 0.35, width * 0.5], [-length * 0.35, -width * 0.5]])
 
+# Rotates the local triangle by the heading theta and moves it to (x, y).
 def transform(local_pts, x, y, theta):
     c, s = np.cos(theta), np.sin(theta)
     R = np.array([[c, -s], [s, c]])
     return (R @ local_pts.T).T + np.array([x, y])
 
+# Draws the board, obstacles, start and goal, and animates the robot along the trajectory. Optionally saves a GIF (needs pillow).
+# Shows a window when a display is available, otherwise only saves / closes the figure.
 def animate_trajectory(env, trajectory, reached, save_gif=False, gif_path=GIF_PATH):
     fig, ax = plt.subplots(figsize=(7, 7))
     ax.set_xlim(0, env.board_size)
@@ -235,6 +261,7 @@ def animate_trajectory(env, trajectory, reached, save_gif=False, gif_path=GIF_PA
         plt.close(fig)
     return anim
 
+# Train, roll out the greedy policy and animate it. The GIF is saved if RL_SAVE_GIF is True or --save-gif is passed.
 if __name__ == "__main__":
     save_gif_flag = SAVE_GIF or ("--save-gif" in sys.argv)
     print("Training the unicycle robot with Q-learning...")
